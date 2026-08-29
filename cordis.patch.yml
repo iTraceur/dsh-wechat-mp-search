@@ -1,0 +1,11 @@
+- insert:
+    - id: wechat-mp-search
+      name: dsh-wechat-mp-search
+      # config:
+      #   requestTimeoutMs: 15000
+      #   linkDelayMs: 200
+      #   linkDelayJitterMs: 400
+      #   pageDelayMs: 1000
+      #   pageDelayJitterMs: 1000
+      #   retryDelayMs: 2500
+      #   maxPages: 30
