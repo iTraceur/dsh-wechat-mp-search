@@ -30,6 +30,6 @@ jobs:
         run: npm test # 质量门:测试不过则不发布
 
       - name: Publish
-        run: npm publish --provenance
+        run: npm publish --provenance --access public # npm 要求新包生成 provenance 时显式声明 public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
