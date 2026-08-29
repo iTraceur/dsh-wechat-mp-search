@@ -1,5 +1,8 @@
 # dsh-wechat-mp-search
 
+[![npm](https://img.shields.io/npm/v/dsh-wechat-mp-search)](https://www.npmjs.com/package/dsh-wechat-mp-search)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 [deepseek-harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) 插件，同时提供同构的 **MCP server** 入口：零配置抓取搜狗微信搜索（weixin.sogou.com），用于检索微信公众号文章并抓取正文。
 
 两种分发形态共享同一套核心逻辑（`src/sogou.ts`），工具名、参数与返回字段完全一致：

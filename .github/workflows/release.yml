@@ -1,0 +1,35 @@
+# 标签驱动的 npm 自动发布:push v* tag → 测试通过后 npm publish(带 provenance 溯源)。
+# 前置:仓库 Settings → Secrets → Actions 配置 NPM_TOKEN(granular token,Packages 读写)。
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm publish --provenance 生成溯源声明所需
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22 # 满足 engines: ^22.19.0 || >=24.0.0 的最低支持线
+          registry-url: https://registry.npmjs.org/
+
+      - name: Install dependencies
+        run: npm ci # 同时触发 prepare 脚本完成构建
+
+      - name: Test
+        run: npm test # 质量门:测试不过则不发布
+
+      - name: Publish
+        run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

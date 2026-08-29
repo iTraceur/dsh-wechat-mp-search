@@ -2,6 +2,20 @@
   "name": "dsh-wechat-mp-search",
   "version": "0.1.0",
   "description": "微信公众号搜狗搜索及文章正文抓取 dsh 插件",
+  "keywords": [
+    "wechat",
+    "weixin",
+    "sogou",
+    "search",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "cordis",
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness"
+  ],
+  "author": "iTraceur",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -26,6 +40,14 @@
     "LICENSE"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iTraceur/dsh-wechat-mp-search.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iTraceur/dsh-wechat-mp-search/issues"
+  },
+  "homepage": "https://github.com/iTraceur/dsh-wechat-mp-search#readme",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build",
@@ -36,6 +58,9 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
