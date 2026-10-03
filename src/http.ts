@@ -34,24 +34,39 @@ export interface FetchOnceResult {
 }
 
 /**
- * 按 UTF-8 字符边界截断字节序列并解码为字符串,避免在多字节
- * 字符中间切断产生乱码尾巴(最多回退 3 字节,UTF-8 单字符最长 4 字节)。
+ * 计算不产生“半个字符”尾巴的安全解码长度:仅当 `limit` 恰好切在某个
+ * 多字节 UTF-8 字符中间时回退到该字符起点(UTF-8 单字符最长 4 字节,
+ * 故最多回退 3 字节)。正文内部的非法字节不在此处处理,交由解码器
+ * 按 U+FFFD 替换。
+ * @param bytes - 原始字节。
+ * @param limit - 期望的解码长度上限(需 > 0)。
+ * @returns 可安全解码的长度。
+ */
+function safeUtf8Length(bytes: Uint8Array, limit: number): number {
+  let start = limit - 1
+  let back = 0
+  while (start > 0 && (bytes[start] & 0xc0) === 0x80 && back < 3) {
+    start--
+    back++
+  }
+  const lead = bytes[start]
+  const need = lead < 0x80 ? 1 : lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 0
+  return need !== 0 && start + need > limit ? start : limit
+}
+
+/**
+ * 按 UTF-8 字符边界截断字节序列并解码为字符串,避免在多字节字符中间
+ * 切断产生乱码尾巴。解码使用非致命模式(`fatal: false`):正文中混入的
+ * 个别非法字节会退化成 U+FFFD,但不会像致命模式那样让截断点之前的
+ * 全部内容一起丢失。
  * @param bytes - 原始字节。
  * @param maxBytes - 最大字节数。
- * @returns 截断范围内的合法 UTF-8 文本;无法解码时返回空串。
+ * @returns 截断范围内的 UTF-8 文本。
  */
 function decodeBytesTruncated(bytes: Uint8Array, maxBytes: number): string {
   const limit = Math.min(bytes.byteLength, maxBytes)
   if (limit <= 0) return ''
-  const decoder = new TextDecoder('utf-8', { fatal: true })
-  for (let end = limit; end > 0 && end > limit - 4; end--) {
-    try {
-      return decoder.decode(bytes.subarray(0, end))
-    } catch {
-      continue
-    }
-  }
-  return ''
+  return new TextDecoder('utf-8').decode(bytes.subarray(0, safeUtf8Length(bytes, limit)))
 }
 
 /**
@@ -89,8 +104,100 @@ async function readBody(response: Response, maxBytes: number): Promise<string> {
   return decodeBytesTruncated(Buffer.concat(chunks), maxBytes)
 }
 
+/** 允许携带会话 cookie 的 host 白名单。jar 不区分 domain/path,故在此统一收口。 */
+const COOKIE_HOSTS: ReadonlySet<string> = new Set(['weixin.sogou.com'])
+/** 单次请求最多跟随的跳转次数。 */
+const MAX_REDIRECTS = 5
+
+/** 是否需要跟随的跳转状态码。 */
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308
+}
+
+/** 读取 `Set-Cookie`(运行时不支持 `getSetCookie` 时返回空数组)。 */
+function readSetCookies(response: Response): string[] {
+  return typeof response.headers.getSetCookie === 'function' ? response.headers.getSetCookie() : []
+}
+
+/** 目标 host 是否允许收发本插件的会话 cookie。 */
+function isCookieHost(target: URL): boolean {
+  return COOKIE_HOSTS.has(target.hostname.toLowerCase())
+}
+
+/** 一次请求(含跳转链)的最终响应与其间采集到的信息。 */
+interface RedirectTrace {
+  /** 最终响应;跳转次数超限或 Location 非法时为该 3xx 响应本身。 */
+  response: Response
+  /** 最终 URL。 */
+  finalUrl: string
+  /** 白名单 host 上采集到的全部 `Set-Cookie`。 */
+  setCookies: string[]
+}
+
 /**
- * 发起一次 GET 请求,跟随跳转,合并取消信号与超时,必要时截断响应体。
+ * 手动跟随跳转发起请求。不使用 `redirect: 'follow'`,实测原因有两条:
+ *
+ * 1. `follow` 只暴露**最终**响应上的 `Set-Cookie`,中途各跳的 `Set-Cookie`
+ *    会被丢弃;而最终响应可能来自跳转目标域(如 `mp.weixin.qq.com`,
+ *    甚至被开放重定向带到的任意域)。{@link updateJar} 用的是扁平的
+ *    name→value jar,不区分 domain/path,把第三方域下发的 cookie 收进去,
+ *    之后就会被随搜狗域的请求一起发回——即跨域 cookie 注入。
+ * 2. cookie 作用域因此只能依赖运行时对跨域跳转的隐式处理。Node 的 fetch
+ *    确实会摘掉跨域跳转上的 `Cookie` 头(已在 Node 24 实测),但那是运行时
+ *    的实现细节,不是本插件的显式保证。手动跟随可在每一跳重新判定 host,
+ *    把"只给白名单 host 发 cookie、只收白名单 host 的 cookie"变成代码里
+ *    可读、可测试的约束。
+ *
+ * 代价是跳转链有了明确上限 {@link MAX_REDIRECTS}。
+ * @param target - 首个请求目标。
+ * @param opts - 请求选项。
+ * @param signal - 已合并超时与外部取消的信号;整个跳转链共用同一超时预算。
+ * @returns 最终响应、最终 URL 与采集到的 `Set-Cookie`。
+ */
+async function fetchFollowingRedirects(
+  target: URL,
+  opts: FetchOnceOptions,
+  signal: AbortSignal | undefined,
+): Promise<RedirectTrace> {
+  const setCookies: string[] = []
+  let current = target
+  for (let hop = 0; ; hop++) {
+    const headers: Record<string, string> = { ...opts.headers }
+    if (opts.cookieHeader && isCookieHost(current)) headers.Cookie = opts.cookieHeader
+
+    const response = await fetch(current, {
+      method: 'GET',
+      headers,
+      redirect: 'manual',
+      signal,
+    })
+
+    // 只采集白名单 host 的 Set-Cookie:jar 不区分 domain,混入第三方域下发的
+    // cookie 后,会被随后的搜狗域请求一起发回。
+    if (isCookieHost(current)) setCookies.push(...readSetCookies(response))
+
+    const location = isRedirectStatus(response.status) ? response.headers.get('location') : null
+    if (location === null || location === '' || hop >= MAX_REDIRECTS) {
+      const finalUrl = typeof response.url === 'string' && response.url !== '' ? response.url : current.href
+      return { response, finalUrl, setCookies }
+    }
+
+    let next: URL
+    try {
+      next = new URL(location, current)
+    } catch {
+      // Location 不是合法 URL:不再跟随,交由调用方按非 200 响应处理。
+      return { response, finalUrl: current.href, setCookies }
+    }
+    // 释放跳转响应的连接后再继续。
+    await response.body?.cancel().catch(() => {})
+    current = next
+  }
+}
+
+/**
+ * 发起一次 GET 请求,跟随跳转(跨域跳转自动摘掉会话 cookie),合并取消信号
+ * 与超时,必要时截断响应体。
  * @param url - 请求目标 URL。
  * @param opts - 请求选项。
  * @returns 状态码、最终 URL、响应体与 Set-Cookie 列表。
@@ -105,23 +212,11 @@ export async function fetchOnce(url: string, opts: FetchOnceOptions): Promise<Fe
     target.search = search.toString()
   }
 
-  const headers: Record<string, string> = { ...opts.headers }
-  if (opts.cookieHeader) headers.Cookie = opts.cookieHeader
-
   const timeoutSignal = AbortSignal.timeout(opts.timeoutMs)
   const signals = [timeoutSignal, opts.signal].filter((s): s is AbortSignal => s !== undefined)
   const combinedSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
 
-  const response = await fetch(target, {
-    method: 'GET',
-    headers,
-    redirect: 'follow',
-    signal: combinedSignal,
-  })
-
-  const setCookies = typeof response.headers.getSetCookie === 'function'
-    ? response.headers.getSetCookie()
-    : []
+  const { response, finalUrl, setCookies } = await fetchFollowingRedirects(target, opts, combinedSignal)
 
   const body = opts.maxBodyBytes === undefined
     ? await response.text()
@@ -129,7 +224,7 @@ export async function fetchOnce(url: string, opts: FetchOnceOptions): Promise<Fe
 
   return {
     status: response.status,
-    finalUrl: response.url,
+    finalUrl,
     body,
     setCookies,
   }

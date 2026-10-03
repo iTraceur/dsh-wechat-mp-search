@@ -1,0 +1,14 @@
+{
+  // 仅供 `npm run typecheck` 使用:在 src 之外把 tests 也纳入类型检查。
+  // 构建用 tsconfig.json 只 include src,原因是测试以 `../src/x.ts` 形式
+  // 直接导入 TS 源码,需要 allowImportingTsExtensions(必须配合 noEmit)。
+  // 若不做这层检查,测试文件里的类型错误只有 esbuild 转译、无人校验。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "rootDir": ".",
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src", "tests"]
+}

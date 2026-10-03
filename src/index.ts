@@ -65,8 +65,9 @@ const SEARCH_PAGE_OUTPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    results: { type: 'array', required: true, items: SEARCH_ROW_SCHEMA, description: '搜索结果列表。' },
-    blocked: { type: 'boolean', required: true, description: '是否命中反爬拦截(会话重试一次后仍失败)。' },
+    results: { type: 'array', required: true, items: SEARCH_ROW_SCHEMA, description: '搜索结果列表;error 非空时必为空数组。' },
+    blocked: { type: 'boolean', required: true, description: '是否命中反爬拦截(反爬页或 403/429/503,会话重试一次后仍失败)。' },
+    error: { type: 'string', description: '失败原因(传输层异常、非预期状态码等);调用正常完成时省略。' },
   },
 } as const
 

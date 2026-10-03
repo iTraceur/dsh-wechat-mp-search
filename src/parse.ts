@@ -107,34 +107,47 @@ function normalizePublishTime(raw: string): string {
 /**
  * 从搜狗微信搜索结果页 HTML 中解析标题/链接与发布时间。
  * 标题节点特征:`id="sogou_vr_11002601_title_N"` 的 `<a>` 标签。
- * 时间节点特征:`class` 含 `s2` 的 `<span>` 标签,与标题按出现顺序一一配对。
+ * 时间节点特征:`class` 含 `s2` 的 `<span>` 标签。
+ *
+ * 时间按"结果块"归属而非按下标配对:每个标题锚点划定自己的区间
+ * (`[本锚点位置, 下一个锚点位置)`),只在该区间内寻找时间节点。
+ * 按下标配对时,任何一条结果缺时间或多出一个 `s2` 节点都会让其后
+ * 所有结果的 `publish_time` 集体错位。
  * @param html - 搜索结果页 HTML。
  * @returns 解析出的行,链接尚未绝对化。
  */
 export function extractSearchResults(html: string): RawSearchRow[] {
-  const titles: Array<{ link: string; title: string }> = []
+  const titles: Array<{ index: number; link: string; title: string }> = []
   for (const match of html.matchAll(TITLE_ANCHOR_RE)) {
     const attrs = match[1] ?? ''
     if (!TITLE_ID_RE.test(attrs)) continue
     const href = HREF_RE.exec(attrs)?.[1] ?? ''
     const title = decodeEntities(stripTags(match[2] ?? '')).trim()
-    titles.push({ link: href, title })
+    titles.push({ index: match.index ?? 0, link: href, title })
   }
 
-  const times: string[] = []
+  const times: Array<{ index: number; value: string }> = []
   for (const match of html.matchAll(TIME_SPAN_RE)) {
     const attrs = match[1] ?? ''
     const classAttr = CLASS_ATTR_RE.exec(attrs)?.[1] ?? ''
     const classes = classAttr.split(/\s+/).filter(Boolean)
     if (!classes.includes('s2')) continue
-    times.push(normalizePublishTime(decodeEntities(stripTags(match[2] ?? '')).trim()))
+    times.push({
+      index: match.index ?? 0,
+      value: normalizePublishTime(decodeEntities(stripTags(match[2] ?? '')).trim()),
+    })
   }
 
-  return titles.map((entry, index) => ({
-    title: entry.title,
-    link: entry.link,
-    publish_time: times[index] ?? '',
-  }))
+  return titles.map((entry, i) => {
+    // 本条结果的区间止于下一个标题锚点;末条则延伸到文档结尾。
+    const regionEnd = titles[i + 1]?.index ?? html.length
+    const time = times.find(item => item.index > entry.index && item.index < regionEnd)
+    return {
+      title: entry.title,
+      link: entry.link,
+      publish_time: time?.value ?? '',
+    }
+  })
 }
 
 /**
@@ -142,19 +155,22 @@ export function extractSearchResults(html: string): RawSearchRow[] {
  * 绝对链接仅当 host 恰为 `weixin.sogou.com` 时原样返回(含端口视为异域),
  * 其余(含非法 URL)返回空串,由调用方丢弃整行——防止搜索页被注入后
  * 携会话 cookie 请求第三方域名。
+ *
+ * 相对路径拼接后的结果同样要复检 host:形如 `href=".evil.com/x"` 的相对
+ * 路径会拼出 `https://weixin.sogou.com.evil.com/x`(host 落在攻击者可控
+ * 域下),只做字符串拼接会绕过上述防护。
  * @param link - 原始 href。
  * @returns 可信的搜狗域绝对 URL;不可信时为空串。
  */
 export function absolutizeLink(link: string): string {
-  if (/^https?:\/\//i.test(link)) {
-    try {
-      if (new URL(link).host === 'weixin.sogou.com') return link
-    } catch {
-      // 非法 URL 落入空串分支,交由调用方丢弃。
-    }
+  if (link === '') return ''
+  const candidate = /^https?:\/\//i.test(link) ? link : `https://weixin.sogou.com${link}`
+  try {
+    return new URL(candidate).host === 'weixin.sogou.com' ? candidate : ''
+  } catch {
+    // 非法 URL 落入空串分支,交由调用方丢弃。
     return ''
   }
-  return `https://weixin.sogou.com${link}`
 }
 
 const URL_FRAGMENT_MARKER = 'url += \''

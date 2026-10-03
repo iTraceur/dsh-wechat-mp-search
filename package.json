@@ -1,6 +1,6 @@
 {
   "name": "dsh-wechat-mp-search",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "微信公众号搜狗搜索及文章正文抓取 dsh 插件",
   "keywords": [
     "wechat",
@@ -51,7 +51,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run"
   },
   "dsh": {
@@ -64,7 +64,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": "^0.1.1-rc.2"
+    "@deepseek-ai/dsh-tools": "^0.1.1-rc.2 || ^0.2.0-rc.1"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1",
@@ -72,8 +72,8 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.1",
-    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0"

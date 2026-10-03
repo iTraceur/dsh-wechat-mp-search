@@ -3,6 +3,8 @@
  * MCP server 入口:把本包的核心搜索/抓取能力(含四项反爬增强)以标准 MCP
  * 工具形式暴露给任意 MCP 客户端(Claude Code / Cursor / Codex 等)。
  * 与 dsh 插件入口(`index.ts`)共享 `sogou.ts` 同一套核心逻辑,零配置运行。
+ * 三个工具的 handler 均把 MCP 请求的 `extra.signal` 透传给核心逻辑,
+ * 使客户端取消请求时能真正中断在途 HTTP 请求与限速等待。
  * @module dsh-wechat-mp-search/mcp-server
  */
 
@@ -32,8 +34,8 @@ function registerSearchTools(server: McpServer, cfg: ResolvedConfig): void {
         page: z.number().int().min(1).optional().describe('搜索结果页码,从 1 开始,默认 1'),
       },
     },
-    async ({ query, page }) => {
-      const result = await doSearch(cfg, query, page ?? DEFAULT_PAGE)
+    async ({ query, page }, extra) => {
+      const result = await doSearch(cfg, query, page ?? DEFAULT_PAGE, extra.signal)
       return { content: jsonText(result) }
     },
   )
@@ -48,8 +50,8 @@ function registerSearchTools(server: McpServer, cfg: ResolvedConfig): void {
         max_pages: z.number().int().min(1).optional().describe('最多翻页数,默认 10;不可超过服务端硬上限'),
       },
     },
-    async ({ query, max_pages }) => {
-      const result = await doSearchAll(cfg, query, max_pages ?? DEFAULT_MAX_PAGES)
+    async ({ query, max_pages }, extra) => {
+      const result = await doSearchAll(cfg, query, max_pages ?? DEFAULT_MAX_PAGES, extra.signal)
       return { content: jsonText(result) }
     },
   )
@@ -67,8 +69,8 @@ function registerArticleTool(server: McpServer, cfg: ResolvedConfig): void {
         referer: z.string().optional().describe('可选的 Referer 请求头'),
       },
     },
-    async ({ real_url, referer }) => {
-      const content = await doArticle(cfg, real_url, referer)
+    async ({ real_url, referer }, extra) => {
+      const content = await doArticle(cfg, real_url, referer, extra.signal)
       return { content: [{ type: 'text' as const, text: content }] }
     },
   )

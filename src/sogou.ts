@@ -15,6 +15,12 @@ const SEARCH_URL = 'https://weixin.sogou.com/weixin'
 const ARTICLE_URL_PREFIX = 'https://mp.weixin.qq.com/'
 const MAX_SEARCH_ATTEMPTS = 2
 
+/**
+ * 视为“被反爬拦截”的 HTTP 状态码:拒绝访问(403)、限流(429)、服务不可用(503)。
+ * 这三者是搜狗拦爬最常见的形态,与反爬页同等对待(重建会话重试)。
+ */
+const BLOCKING_STATUSES: ReadonlySet<number> = new Set([403, 429, 503])
+
 /** {@link doArticle} 失败时返回文案的固定前缀,供入口层描述文案引用,避免多处硬编码漂移。 */
 export const ARTICLE_FAILURE_PREFIX = '获取文章内容失败:'
 /** `weixin_search` 的 `page` 参数默认值。 */
@@ -74,6 +80,16 @@ export function resolveConfig(overrides: Partial<ResolvedConfig> = {}): Resolved
  */
 function abortReasonOf(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException('This operation was aborted', 'AbortError')
+}
+
+/**
+ * 把任意抛出物转成可读的失败原因文本,空消息回退为固定文案。
+ * @param error - 捕获到的任意异常。
+ * @returns 非空的失败原因文本。
+ */
+function errorText(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error)
+  return text.trim() === '' ? '未知错误' : text
 }
 
 /**
@@ -156,7 +172,7 @@ export async function resolveRealUrl(
  * @param query - 搜索关键词。
  * @param page - 页码,从 1 开始。
  * @param signal - 可选的取消信号。
- * @returns 本页结果与是否命中反爬拦截。
+ * @returns 本页结果、是否命中反爬拦截,以及失败原因(`error`,成功时省略)。
  */
 export async function doSearch(
   cfg: ResolvedConfig,
@@ -187,12 +203,21 @@ export async function doSearch(
     } catch (error) {
       // 外部取消:向上传播,由框架按"工具被取消"处理,而非伪装成空结果。
       if (signal?.aborted) throw error
-      // 网络异常按未拦截、空结果处理,不向上抛出。
-      return { results: [], blocked: false }
+      // 传输层异常(超时/DNS/连接失败)与"搜索确实没有结果"必须可区分:
+      // 记入 error 字段,而不是静默返回空结果。
+      return { results: [], blocked: false, error: errorText(error) }
     }
     updateJar(jar, res.setCookies)
 
-    if (res.status !== 200) return { results: [], blocked: false }
+    if (res.status !== 200) {
+      const blocking = BLOCKING_STATUSES.has(res.status)
+      // 403/429/503 是搜狗拦爬的常见形态,与反爬页同样重建会话重试一次。
+      if (blocking && attempt < MAX_SEARCH_ATTEMPTS) {
+        await jitterDelay(cfg.retryDelayMs, cfg.retryDelayMs + 1000, signal)
+        continue
+      }
+      return { results: [], blocked: blocking, error: `搜狗返回 HTTP ${res.status}` }
+    }
 
     if (isAntiSpider(res.body, res.finalUrl)) {
       if (attempt < MAX_SEARCH_ATTEMPTS) {
@@ -219,13 +244,15 @@ export async function doSearch(
 
 /**
  * 按 `weixin_search_all` 语义聚合多页搜索:请求页数被 `cfg.maxPages`
- * 硬钳制;页间执行限速抖动;空页(已无更多结果)或命中反爬立即停止。
+ * 硬钳制;页间执行限速抖动;空页(已无更多结果)、命中反爬或某页出错
+ * 立即停止,并把该页的 `blocked`/`error` 原样带出,避免中间页的失败
+ * 被"聚合成功"掩盖。
  * 与原 Python MCP 的翻页终止条件保持一致。
  * @param cfg - 已解析默认值的插件配置。
  * @param query - 搜索关键词。
  * @param maxPages - 请求的最大翻页数(默认入口层取 10)。
  * @param signal - 可选的取消信号。
- * @returns 聚合结果与是否命中反爬拦截。
+ * @returns 聚合结果、是否命中反爬拦截,以及中途失败原因(`error`,成功时省略)。
  */
 export async function doSearchAll(
   cfg: ResolvedConfig,
@@ -239,8 +266,10 @@ export async function doSearchAll(
     if (page > 1) await jitterDelay(cfg.pageDelayMs, cfg.pageDelayMs + cfg.pageDelayJitterMs, signal)
     const pageResult = await doSearch(cfg, query, page, signal)
     results.push(...pageResult.results)
-    if (pageResult.blocked || pageResult.results.length === 0) {
-      return { results, blocked: pageResult.blocked }
+    if (pageResult.blocked || pageResult.error !== undefined || pageResult.results.length === 0) {
+      const aggregated: SearchPageResult = { results, blocked: pageResult.blocked }
+      if (pageResult.error !== undefined) aggregated.error = pageResult.error
+      return aggregated
     }
   }
   return { results, blocked: false }

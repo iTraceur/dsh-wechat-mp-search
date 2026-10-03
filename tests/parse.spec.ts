@@ -76,7 +76,7 @@ describe('isAntiSpider', () => {
 })
 
 describe('extractSearchResults', () => {
-  it('按出现顺序配对标题与发布时间,标题文本去标签并解码实体', () => {
+  it('按结果块配对标题与发布时间,标题文本去标签并解码实体', () => {
     const html = fixture('search-page.html')
     const rows = extractSearchResults(html)
     expect(rows).toHaveLength(3)
@@ -101,6 +101,30 @@ describe('extractSearchResults', () => {
   it('未匹配到标题节点时返回空数组', () => {
     expect(extractSearchResults('<div>没有结果</div>')).toEqual([])
   })
+
+  it('某条结果缺少时间节点时,后续结果的时间不会被前移(回归)', () => {
+    const html = '<a href="/link?url=a" id="sogou_vr_11002601_title_0">第一条</a>'
+      + '<a href="/link?url=b" id="sogou_vr_11002601_title_1">第二条</a>'
+      + '<span class="s2">2024-02-15</span>'
+
+    const rows = extractSearchResults(html)
+
+    // 按下标 times[index] 配对会把 "2024-02-15" 错误地挂到第一条上,第二条反而为空。
+    expect(rows.map(row => row.publish_time)).toEqual(['', '2024-02-15'])
+  })
+
+  it('结果块内多出一个 s2 时间节点时只影响该条,不牵连后续结果', () => {
+    const html = '<a href="/link?url=a" id="sogou_vr_11002601_title_0">第一条</a>'
+      + '<span class="s2">2024-01-01</span>'
+      + '<span class="s2">2024-01-02</span>'
+      + '<a href="/link?url=b" id="sogou_vr_11002601_title_1">第二条</a>'
+      + '<span class="s2">2024-02-15</span>'
+
+    const rows = extractSearchResults(html)
+
+    // 按下标配对会让第二条拿到属于第一条的第二个时间节点 "2024-01-02"。
+    expect(rows.map(row => row.publish_time)).toEqual(['2024-01-01', '2024-02-15'])
+  })
 })
 
 describe('absolutizeLink', () => {
@@ -118,6 +142,22 @@ describe('absolutizeLink', () => {
     expect(absolutizeLink('https://weixin.sogou.com.evil.com/link')).toBe('')
     expect(absolutizeLink('https://weixin.sogou.com:8080/link?url=x')).toBe('')
     expect(absolutizeLink('https://[invalid')).toBe('')
+  })
+
+  it('相对路径拼接后 host 落在第三方域时返回空串(防会话 cookie 外泄)', () => {
+    // 仅做字符串拼接会得到 https://weixin.sogou.com.evil.com/x,host 归攻击者所有。
+    expect(absolutizeLink('.evil.com/link?url=x')).toBe('')
+    expect(absolutizeLink('weixin.sogou.com.evil.com/link?url=x')).toBe('')
+    // 缺少前导斜杠的相对路径会拼出 host「weixin.sogou.comlink」。
+    expect(absolutizeLink('link?url=abc')).toBe('')
+  })
+
+  it('空 href 返回空串,不产生对站点根路径的无效请求', () => {
+    expect(absolutizeLink('')).toBe('')
+  })
+
+  it('无 http(s) 协议头且拼接后端口非法的链接返回空串', () => {
+    expect(absolutizeLink('javascript:alert(1)')).toBe('')
   })
 })
 

@@ -27,6 +27,8 @@ interface MockResponseInit {
   url?: string
   body?: string
   setCookies?: string[]
+  /** 可选的 `Location` 响应头(3xx 跳转用)。 */
+  location?: string
 }
 
 function mockResponse(opts: MockResponseInit = {}): Response {
@@ -35,7 +37,10 @@ function mockResponse(opts: MockResponseInit = {}): Response {
     status: opts.status ?? 200,
     url: opts.url ?? 'https://weixin.sogou.com/weixin',
     text: () => Promise.resolve(opts.body ?? ''),
-    headers: { getSetCookie: () => setCookies },
+    headers: {
+      getSetCookie: () => setCookies,
+      get: (name: string) => (name.toLowerCase() === 'location' ? opts.location ?? null : null),
+    },
   } as unknown as Response
 }
 
@@ -106,12 +111,37 @@ describe('doSearch', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('非 200 状态码:返回空结果且不判定为 blocked', async () => {
-    fetchMock.mockResolvedValueOnce(mockResponse({ status: 503, body: '' }))
+  it('403/429/503 视为被拦截:重建会话重试一次后判定 blocked 并给出 error', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ status: 503, body: '' }))
+      .mockResolvedValueOnce(mockResponse({ status: 503, body: '' }))
 
     const result = await doSearch(FAST_CONFIG, '测试关键词', 1)
 
-    expect(result).toEqual({ results: [], blocked: false })
+    expect(result).toEqual({ results: [], blocked: true, error: '搜狗返回 HTTP 503' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('拒绝状态码属于可重试:重建会话后第二次拿到正常结果', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ status: 403, body: '' }))
+      .mockResolvedValueOnce(mockResponse({ body: ONE_ROW_SEARCH_HTML }))
+      .mockResolvedValueOnce(mockResponse({ body: LINK_REDIRECT_HTML }))
+
+    const result = await doSearch(FAST_CONFIG, '测试关键词', 1)
+
+    expect(result.blocked).toBe(false)
+    expect(result.error).toBeUndefined()
+    expect(result.results).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('非拦截类非 200 状态码:不重试,blocked 为 false 但带 error', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse({ status: 500, body: '' }))
+
+    const result = await doSearch(FAST_CONFIG, '测试关键词', 1)
+
+    expect(result).toEqual({ results: [], blocked: false, error: '搜狗返回 HTTP 500' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
@@ -130,12 +160,12 @@ describe('doSearch', () => {
     expect(secondCallInit.headers?.Cookie).toContain('SUV=abc123')
   })
 
-  it('网络异常(signal 未取消)返回空结果而非抛出', async () => {
+  it('网络异常(signal 未取消)不伪装成空结果:blocked false 且带 error', async () => {
     fetchMock.mockRejectedValueOnce(new Error('network down'))
 
     const result = await doSearch(FAST_CONFIG, '测试关键词', 1)
 
-    expect(result).toEqual({ results: [], blocked: false })
+    expect(result).toEqual({ results: [], blocked: false, error: 'network down' })
   })
 
   it('外部 signal 已取消时向上抛出 AbortError 而非返回空结果', async () => {
@@ -211,6 +241,25 @@ describe('doSearchAll 翻页中途命中反爬', () => {
     expect(result.results).toHaveLength(3)
     // 第 1 页 4 次请求 + 第 2 页两次反爬 2 次,共 6 次。
     expect(fetchMock).toHaveBeenCalledTimes(6)
+  })
+})
+
+describe('doSearchAll 失败传播', () => {
+  it('后续页出错时保留已聚合结果,并把 error 带出而非静默当成空页', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockResponse({ body: SEARCH_PAGE_HTML }))
+      .mockResolvedValueOnce(mockResponse({ body: LINK_REDIRECT_HTML }))
+      .mockResolvedValueOnce(mockResponse({ body: LINK_REDIRECT_HTML }))
+      .mockResolvedValueOnce(mockResponse({ body: LINK_REDIRECT_HTML }))
+      .mockResolvedValueOnce(mockResponse({ status: 500, body: '' }))
+
+    const result = await doSearchAll(FAST_CONFIG, '测试关键词', 5)
+
+    expect(result.results).toHaveLength(3)
+    expect(result.blocked).toBe(false)
+    expect(result.error).toBe('搜狗返回 HTTP 500')
+    // 第 1 页 4 次 + 第 2 页 1 次(500 不重试、不解析链接)。
+    expect(fetchMock).toHaveBeenCalledTimes(5)
   })
 })
 

@@ -69,6 +69,8 @@ describe('apply', () => {
     const outputSchema = byName.get('weixin_search')?.output.schema as Record<string, unknown>
     expect(outputSchema).toMatchObject({ type: 'object', additionalProperties: false })
     const properties = outputSchema.properties as Record<string, unknown>
+    // 失败原因字段必须声明,否则 additionalProperties: false 会把它判为非法输出。
+    expect(properties.error).toMatchObject({ type: 'string' })
     const resultsItems = (properties.results as { items: Record<string, unknown> }).items
     expect(resultsItems).toMatchObject({ type: 'object', additionalProperties: false })
   })
@@ -106,7 +108,7 @@ describe('weixin_search_all 的 max_pages 硬上限', () => {
       status: 200,
       url: 'https://weixin.sogou.com/weixin',
       text: () => Promise.resolve(body),
-      headers: { getSetCookie: () => [] },
+      headers: { getSetCookie: () => [], get: () => null },
     } as unknown as Response
   }
 
